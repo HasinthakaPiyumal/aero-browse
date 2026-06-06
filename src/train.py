@@ -78,7 +78,7 @@ def train_vla():
         remove_unused_columns=False,
         save_strategy="steps",
         save_steps=50,
-        max_seq_length=1024, # <-- max_seq_length එක config එක ඇතුළට ආවා
+        max_length=1024,
     )
 
     trainer = SFTTrainer(
