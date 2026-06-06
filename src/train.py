@@ -84,7 +84,6 @@ def train_vla():
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
-        peft_config=peft_config,
         args=training_args,
     )
 
