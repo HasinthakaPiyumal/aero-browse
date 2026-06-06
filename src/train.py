@@ -67,7 +67,7 @@ def train_vla():
 
 
     training_args = SFTConfig(
-        output_dir="./velovla-sft-output",
+        output_dir="./aero-browse-sft-output",
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
@@ -81,16 +81,32 @@ def train_vla():
         max_length=1024,
     )
 
+    def collate_fn(examples):
+        input_ids = [e["input_ids"] for e in examples]
+        labels = [e["labels"] for e in examples]
+        pixel_values = [e["pixel_values"] for e in examples]
+        
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+        pixel_values = torch.stack(pixel_values)
+        
+        return {
+            "input_ids": input_ids,
+            "labels": labels,
+            "pixel_values": pixel_values
+        }
+
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         args=training_args,
+        data_collator=collate_fn,
     )
 
     print("[Training] Starting SFT Training Loop on Colab...")
     trainer.train()
     
-    trainer.model.save_pretrained("./velovla_lora_adapter")
+    trainer.model.save_pretrained("./aero-browse_lora_adapter")
     print("[Training] Fine-tuning completed and Adapter saved successfully!")
 
 if __name__ == "__main__":

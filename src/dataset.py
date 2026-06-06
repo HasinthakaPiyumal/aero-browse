@@ -7,6 +7,8 @@ class BrowserAgentDataset(Dataset):
         self.data = raw_web_data
         self.processor = processor
         self.vla_config = VLATokenizerConfig()
+        self.column_names = ["input_ids", "pixel_values", "labels"]
+
 
     def __len__(self):
         return len(self.data)
@@ -26,11 +28,20 @@ class BrowserAgentDataset(Dataset):
             text_content=item.get("text")
         ) + "<terminate>"
         
-        inputs = self.processor(text=prompt, images=image, return_tensors="pt")
-        labels = self.processor.tokenizer(text=target_action_str, return_tensors="pt")["input_ids"]
+        full_text = prompt + target_action_str
+        
+        inputs = self.processor(text=full_text, images=image, return_tensors="pt")
+        prompt_inputs = self.processor(text=prompt, images=image, return_tensors="pt")
+        
+        input_ids = inputs["input_ids"].squeeze(0)
+        labels = input_ids.clone()
+        
+        # Mask the prompt tokens so the model only calculates loss on the target_action_str
+        prompt_len = prompt_inputs["input_ids"].shape[1]
+        labels[:prompt_len] = -100
         
         return {
-            "input_ids": inputs["input_ids"].squeeze(0),
+            "input_ids": input_ids,
             "pixel_values": inputs["pixel_values"].squeeze(0),
-            "labels": labels.squeeze(0)
+            "labels": labels
         }
