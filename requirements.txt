@@ -1,0 +1,8 @@
+websockets==16.0
+opencv-python==4.13.0.92
+numpy==2.4.6
+torch==2.12.0
+asyncio==4.0.0
+transformers==5.10.2
+peft==0.19.1
+trl==1.5.1
