@@ -2,7 +2,7 @@ import torch
 from transformers import AutoProcessor, BitsAndBytesConfig, TrainingArguments
 
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 from src.vla_tokenizer import VLATokenizerConfig
 from src.dataset import BrowserAgentDataset
 import numpy as np
@@ -46,7 +46,8 @@ def train_vla():
         lora_dropout=0.05,
         bias="none",
         modules_to_save=["embed_tokens", "lm_head"], 
-        task_type="CAUSAL_LM"
+        task_type="CAUSAL_LM",
+        ensure_weight_tying=True
     )
     
     model = get_peft_model(model, peft_config)
@@ -64,18 +65,20 @@ def train_vla():
     
     train_dataset = BrowserAgentDataset(mock_raw_data, processor)
 
-    training_args = TrainingArguments(
+
+    training_args = SFTConfig(
         output_dir="./velovla-sft-output",
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=10,
-        max_steps=100,
+        max_steps=100, 
         optim="paged_adamw_8bit",
-        bf16=True,
+        bf16=True, 
         remove_unused_columns=False,
         save_strategy="steps",
-        save_steps=50
+        save_steps=50,
+        max_seq_length=1024, # <-- max_seq_length එක config එක ඇතුළට ආවා
     )
 
     trainer = SFTTrainer(
@@ -83,7 +86,6 @@ def train_vla():
         train_dataset=train_dataset,
         peft_config=peft_config,
         args=training_args,
-        max_seq_length=1024,
     )
 
     print("[Training] Starting SFT Training Loop on Colab...")
