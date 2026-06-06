@@ -2,4 +2,4 @@ CHROME_PORT = 9222
 FRAME_WIDTH = 448
 FRAME_HEIGHT = 448
 SHM_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 4
-SHM_NAME = "velovla_frame_buffer"
+SHM_NAME = "aero_browse_frame_buffer"
