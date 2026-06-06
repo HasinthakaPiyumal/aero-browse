@@ -1,10 +1,16 @@
 import torch
-from transformers import AutoProcessor, AutoModelForVision2Seq, BitsAndBytesConfig, TrainingArguments
+from transformers import AutoProcessor, BitsAndBytesConfig, TrainingArguments
+
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer
 from src.vla_tokenizer import VLATokenizerConfig
 from src.dataset import BrowserAgentDataset
 import numpy as np
+
+try:
+    from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+except ImportError:
+    from transformers import AutoModelForVision2Seq
 
 def train_vla():
     model_id = "HuggingFaceTB/SmolVLM-Instruct"
