@@ -104,17 +104,38 @@ def train_vla():
         attention_mask = [e["attention_mask"] for e in examples]
         labels = [e["labels"] for e in examples]
         pixel_values = [e["pixel_values"] for e in examples]
+        pixel_attention_mask = [e["pixel_attention_mask"] for e in examples]
         
         input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
-        pixel_values = torch.stack(pixel_values)
+        
+        # Pad pixel_values and pixel_attention_mask along patch dimension
+        max_patches = max(p.shape[0] for p in pixel_values)
+        padded_pixel_values = []
+        padded_pixel_attention_mask = []
+        
+        for p, p_mask in zip(pixel_values, pixel_attention_mask):
+            num_patches = p.shape[0]
+            # Pad pixel_values: shape [num_patches, 3, 384, 384] -> [max_patches, 3, 384, 384]
+            # padding: (0,0) for dim 3, (0,0) for dim 2, (0,0) for dim 1, (0, max_patches - num_patches) for dim 0
+            p_pad = torch.nn.functional.pad(p, (0, 0, 0, 0, 0, 0, 0, max_patches - num_patches), value=0)
+            padded_pixel_values.append(p_pad)
+            
+            # Pad pixel_attention_mask: shape [num_patches, 384, 384] -> [max_patches, 384, 384]
+            # padding: (0,0) for dim 2, (0,0) for dim 1, (0, max_patches - num_patches) for dim 0
+            m_pad = torch.nn.functional.pad(p_mask, (0, 0, 0, 0, 0, max_patches - num_patches), value=0)
+            padded_pixel_attention_mask.append(m_pad)
+            
+        pixel_values = torch.stack(padded_pixel_values)
+        pixel_attention_mask = torch.stack(padded_pixel_attention_mask)
         
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
-            "pixel_values": pixel_values
+            "pixel_values": pixel_values,
+            "pixel_attention_mask": pixel_attention_mask
         }
 
     trainer = SFTTrainer(

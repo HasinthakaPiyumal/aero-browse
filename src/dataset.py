@@ -121,5 +121,6 @@ class BrowserAgentDataset(Dataset):
             "input_ids": input_ids,
             "attention_mask": inputs["attention_mask"].squeeze(0),
             "pixel_values": inputs["pixel_values"].squeeze(0),
+            "pixel_attention_mask": inputs["pixel_attention_mask"].squeeze(0),
             "labels": labels
         }
