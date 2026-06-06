@@ -7,7 +7,7 @@ class BrowserAgentDataset(Dataset):
         self.data = raw_web_data
         self.processor = processor
         self.vla_config = VLATokenizerConfig()
-        self.column_names = ["input_ids", "pixel_values", "labels"]
+        self.column_names = ["input_ids", "attention_mask", "pixel_values", "labels"]
 
 
     def __len__(self):
@@ -42,6 +42,7 @@ class BrowserAgentDataset(Dataset):
         
         return {
             "input_ids": input_ids,
+            "attention_mask": inputs["attention_mask"].squeeze(0),
             "pixel_values": inputs["pixel_values"].squeeze(0),
             "labels": labels
         }
