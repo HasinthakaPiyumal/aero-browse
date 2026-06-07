@@ -63,45 +63,9 @@ def run_pipeline(args):
     from PIL import Image
     from tqdm import tqdm
 
-    from transformers import AutoProcessor, BitsAndBytesConfig, TrainerCallback
-    from peft import LoraConfig, get_peft_model, PeftModel
-    from trl import SFTTrainer, SFTConfig
-    from datasets import load_dataset, logging as ds_logging
 
-    # Add local path to sys.path
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from src.vla_tokenizer import VLATokenizerConfig
-    from src.dataset import BrowserAgentDataset
 
-    # Set dataset verbosity to info
-    ds_logging.set_verbosity_info()
 
-    # Define the callback inside so it has access to TrainerCallback
-    class ConsoleProgressCallback(TrainerCallback):
-        """Callback to log progress live to W&B and console tqdm."""
-        def __init__(self, max_steps):
-            self.pbar = None
-            self.max_steps = max_steps
-
-        def on_train_begin(self, args, state, control, **kwargs):
-            self.pbar = tqdm(total=self.max_steps, desc="Fine-tuning VLA", dynamic_ncols=True)
-
-        def on_step_end(self, args, state, control, **kwargs):
-            if self.pbar:
-                self.pbar.n = state.global_step
-                self.pbar.refresh()
-            
-            # Log progress live to W&B on every step
-            progress_pct = (state.global_step / self.max_steps) * 100
-            import wandb
-            wandb.log({
-                "progress_percent": progress_pct,
-                "global_step_counter": state.global_step
-            })
-
-        def on_train_end(self, args, state, control, **kwargs):
-            if self.pbar:
-                self.pbar.close()
 
     # ── Check Authentication & Environment ──
     hf_token = os.environ.get("HF_TOKEN")
@@ -125,12 +89,13 @@ def run_pipeline(args):
             print("   Continuing without authentication (public models still work).")
             hf_token = None
         
-    if not torch.cuda.is_available():
-        print("❌ Error: CUDA-enabled GPU is required for training.")
-        sys.exit(1)
-        
-    print(f"🚀 Device: {torch.cuda.get_device_name(0)}")
-    print(f"💾 VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    if not args.skip_training or not args.skip_merge:
+        if not torch.cuda.is_available():
+            print("❌ Error: CUDA-enabled GPU is required for training or merging.")
+            sys.exit(1)
+            
+        print(f"🚀 Device: {torch.cuda.get_device_name(0)}")
+        print(f"💾 VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     # ── Initialize W&B ──
     import wandb
@@ -143,32 +108,75 @@ def run_pipeline(args):
     print(f"✅ W&B initialized: {wandb.run.url}")
 
     # ── 1. Load Tokenizer & Configs ──
-    print("\n[1/5] Injecting action tokens into processor...")
-    vla_config = VLATokenizerConfig()
+    if not args.skip_training or not args.skip_merge:
+        print("\n[1/5] Injecting action tokens into processor...")
+        # Add local path to sys.path
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from src.vla_tokenizer import VLATokenizerConfig
+        from transformers import AutoProcessor
 
-    # SmolVLM's preprocessor_config.json can break AutoProcessor auto-detection
-    # in some transformers versions. Try explicit processor classes first.
-    processor = None
-    for proc_cls_name in ["SmolVLMProcessor", "Idefics3Processor"]:
-        try:
-            import transformers
-            proc_cls = getattr(transformers, proc_cls_name)
-            processor = proc_cls.from_pretrained(args.base_model, token=hf_token)
-            print(f"      Loaded processor via {proc_cls_name}.")
-            break
-        except (AttributeError, ImportError, Exception) as e:
-            print(f"      {proc_cls_name} unavailable: {e}")
-            continue
-    if processor is None:
-        processor = AutoProcessor.from_pretrained(args.base_model, token=hf_token)
-        print("      Loaded processor via AutoProcessor.")
+        vla_config = VLATokenizerConfig()
 
-    tokenizer = processor.tokenizer
-    num_added = tokenizer.add_tokens(vla_config.all_custom_tokens)
-    print(f"      Added {num_added} custom action & coordinate tokens.")
+        # SmolVLM's preprocessor_config.json can break AutoProcessor auto-detection
+        # in some transformers versions. Try explicit processor classes first.
+        processor = None
+        for proc_cls_name in ["SmolVLMProcessor", "Idefics3Processor"]:
+            try:
+                import transformers
+                proc_cls = getattr(transformers, proc_cls_name)
+                processor = proc_cls.from_pretrained(args.base_model, token=hf_token)
+                print(f"      Loaded processor via {proc_cls_name}.")
+                break
+            except (AttributeError, ImportError, Exception) as e:
+                print(f"      {proc_cls_name} unavailable: {e}")
+                continue
+        if processor is None:
+            processor = AutoProcessor.from_pretrained(args.base_model, token=hf_token)
+            print("      Loaded processor via AutoProcessor.")
+
+        tokenizer = processor.tokenizer
+        num_added = tokenizer.add_tokens(vla_config.all_custom_tokens)
+        print(f"      Added {num_added} custom action & coordinate tokens.")
+    else:
+        print("\n[1/5] Skipping processor and tokenizer injection...")
 
     # ── 2. Load & Filter Dataset ──
     if not args.skip_training:
+        from datasets import load_dataset, logging as ds_logging
+        from transformers import BitsAndBytesConfig, TrainerCallback
+        from peft import LoraConfig, get_peft_model
+        from trl import SFTTrainer, SFTConfig
+        from src.dataset import BrowserAgentDataset
+
+        ds_logging.set_verbosity_info()
+
+        # Define progress callback
+        class ConsoleProgressCallback(TrainerCallback):
+            """Callback to log progress live to W&B and console tqdm."""
+            def __init__(self, max_steps):
+                self.pbar = None
+                self.max_steps = max_steps
+
+            def on_train_begin(self, args, state, control, **kwargs):
+                self.pbar = tqdm(total=self.max_steps, desc="Fine-tuning VLA", dynamic_ncols=True)
+
+            def on_step_end(self, args, state, control, **kwargs):
+                if self.pbar:
+                    self.pbar.n = state.global_step
+                    self.pbar.refresh()
+                
+                # Log progress live to W&B on every step
+                progress_pct = (state.global_step / self.max_steps) * 100
+                import wandb
+                wandb.log({
+                    "progress_percent": progress_pct,
+                    "global_step_counter": state.global_step
+                })
+
+            def on_train_end(self, args, state, control, **kwargs):
+                if self.pbar:
+                    self.pbar.close()
+
         print("\n[2/5] Loading Multimodal-Mind2Web dataset from HF...")
         hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
 
@@ -329,6 +337,12 @@ def run_pipeline(args):
     # ── 6. Merge LoRA Weights ──
     if not args.skip_merge:
         print("\n🔗 Starting LoRA Weight Merge...")
+        from peft import PeftModel
+        try:
+            from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+        except ImportError:
+            from transformers import AutoModelForVision2Seq
+
         if not args.skip_training:
             del model, trainer
             gc.collect()
