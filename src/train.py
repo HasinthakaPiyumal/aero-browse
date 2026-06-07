@@ -57,7 +57,11 @@ def train_vla():
     filtered_dataset = hf_dataset.filter(has_bounding_box)
     print(f"[Training] Filtered dataset size: {len(filtered_dataset)}")
 
-    train_dataset = BrowserAgentDataset(filtered_dataset, processor)
+    print("[Training] Splitting dataset into 95% train and 5% validation...")
+    split_ds = filtered_dataset.train_test_split(test_size=0.05, seed=42)
+    train_dataset = BrowserAgentDataset(split_ds["train"], processor)
+    eval_dataset = BrowserAgentDataset(split_ds["test"], processor)
+    print(f"[Training] Train samples: {len(train_dataset)}, Validation samples: {len(eval_dataset)}")
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -103,6 +107,8 @@ def train_vla():
         remove_unused_columns=False,
         save_strategy="steps",
         save_steps=50,
+        eval_strategy="steps",
+        eval_steps=50,
         max_length=1024,
         gradient_checkpointing=True,
         dataloader_num_workers=2,
@@ -151,6 +157,7 @@ def train_vla():
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         args=training_args,
         data_collator=collate_fn,
     )
