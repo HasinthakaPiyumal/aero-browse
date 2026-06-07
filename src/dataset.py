@@ -87,17 +87,17 @@ class BrowserAgentDataset(Dataset):
             if has_valid_coords:
                 y_start = int(cy - H_crop / 2)
                 y_start = max(0, min(H - H_crop, y_start))
-                image = screenshot.crop((0, y_start, W, y_start + H_crop))
+                image = screenshot.crop((0, y_start, W, y_start + H_crop)).copy()
                 new_cy = cy - y_start
             else:
                 y_start = 0
-                image = screenshot.crop((0, 0, W, H_crop))
+                image = screenshot.crop((0, 0, W, H_crop)).copy()
                 new_cy = 500
             
             actual_crop_height = H_crop
         else:
             y_start = 0
-            image = screenshot
+            image = screenshot.copy()
             new_cy = cy if has_valid_coords else 500
             actual_crop_height = H
             
@@ -134,13 +134,16 @@ class BrowserAgentDataset(Dataset):
             image = image.convert("RGB")
             
         inputs = self.processor(text=full_text, images=image, return_tensors="pt")
-        prompt_inputs = self.processor(text=prompt, images=image, return_tensors="pt")
         
         input_ids = inputs["input_ids"].squeeze(0)
         labels = input_ids.clone()
         
-        # Mask the prompt tokens so the model only calculates loss on the target_action_str
-        prompt_len = prompt_inputs["input_ids"].shape[1]
+        # Tokenize only target_action_str to find its token length.
+        # This avoids running the expensive vision processor twice.
+        target_inputs = self.processor.tokenizer(target_action_str, add_special_tokens=False)
+        target_len = len(target_inputs["input_ids"])
+        
+        prompt_len = max(0, input_ids.shape[0] - target_len)
         labels[:prompt_len] = -100
         
         return {

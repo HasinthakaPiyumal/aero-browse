@@ -34,7 +34,8 @@ def train_vla():
     model = AutoModelForVision2Seq.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        device_map="auto"
+        device_map="auto",
+        _attn_implementation="sdpa"
     )
 
     model.resize_token_embeddings(len(tokenizer))
@@ -74,8 +75,10 @@ def train_vla():
         except Exception:
             return False
 
+    import os
     print("[Training] Filtering dataset for valid bounding boxes...")
-    filtered_dataset = hf_dataset.filter(has_bounding_box)
+    num_proc = os.cpu_count() or 2
+    filtered_dataset = hf_dataset.filter(has_bounding_box, num_proc=num_proc)
     print(f"[Training] Filtered dataset size: {len(filtered_dataset)}")
 
     # Use a subset of the dataset if you want to test the pipeline quickly
@@ -86,8 +89,8 @@ def train_vla():
 
     training_args = SFTConfig(
         output_dir="./aero-browse-sft-output",
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=2,
         learning_rate=2e-4,
         logging_steps=10,
         max_steps=100, 
@@ -97,6 +100,9 @@ def train_vla():
         save_strategy="steps",
         save_steps=50,
         max_length=1024,
+        gradient_checkpointing=True,
+        dataloader_num_workers=2,
+        dataloader_pin_memory=True,
     )
 
     def collate_fn(examples):
