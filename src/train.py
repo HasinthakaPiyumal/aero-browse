@@ -1,4 +1,11 @@
 import torch
+import sys
+try:
+    import torchvision
+except ImportError:
+    print("❌ Error: 'torchvision' library is missing! It is required by SmolVLM's image processor.")
+    print("   Please install it in your environment: pip install torchvision")
+    sys.exit(1)
 from transformers import AutoProcessor, BitsAndBytesConfig, TrainingArguments
 
 from peft import LoraConfig, get_peft_model
@@ -23,6 +30,34 @@ def train_vla():
     
     num_added_toks = tokenizer.add_tokens(vla_config.all_custom_tokens)
     print(f"Added {num_added_toks} new action/coordinate tokens to vocabulary.")
+
+    from datasets import load_dataset
+    import json
+
+    print("[Training] Loading Multimodal-Mind2Web dataset from HF Hub...")
+    hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
+
+    def has_bounding_box(example):
+        try:
+            candidates = example["pos_candidates"]
+            if not candidates:
+                return False
+            for c_str in candidates:
+                c = json.loads(c_str) if isinstance(c_str, str) else c_str
+                attrs = c.get("attributes", {})
+                if isinstance(attrs, str):
+                    attrs = json.loads(attrs)
+                if attrs.get("bounding_box_rect"):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    print("[Training] Filtering dataset for valid bounding boxes sequentially...")
+    filtered_dataset = hf_dataset.filter(has_bounding_box)
+    print(f"[Training] Filtered dataset size: {len(filtered_dataset)}")
+
+    train_dataset = BrowserAgentDataset(filtered_dataset, processor)
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -53,39 +88,8 @@ def train_vla():
     
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
-    from datasets import load_dataset
-    import json
-
-    print("[Training] Loading Multimodal-Mind2Web dataset from HF Hub...")
-    hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
-
-    def has_bounding_box(example):
-        try:
-            candidates = example["pos_candidates"]
-            if not candidates:
-                return False
-            for c_str in candidates:
-                c = json.loads(c_str) if isinstance(c_str, str) else c_str
-                attrs = c.get("attributes", {})
-                if isinstance(attrs, str):
-                    attrs = json.loads(attrs)
-                if attrs.get("bounding_box_rect"):
-                    return True
-            return False
-        except Exception:
-            return False
-
-    import os
-    print("[Training] Filtering dataset for valid bounding boxes...")
-    num_proc = os.cpu_count() or 2
-    filtered_dataset = hf_dataset.filter(has_bounding_box, num_proc=num_proc)
-    print(f"[Training] Filtered dataset size: {len(filtered_dataset)}")
-
     # Use a subset of the dataset if you want to test the pipeline quickly
     # E.g., train_dataset = BrowserAgentDataset(filtered_dataset.select(range(100)), processor)
-    train_dataset = BrowserAgentDataset(filtered_dataset, processor)
-
-
 
     training_args = SFTConfig(
         output_dir="./aero-browse-sft-output",
@@ -94,7 +98,7 @@ def train_vla():
         learning_rate=2e-4,
         logging_steps=10,
         max_steps=100, 
-        optim="paged_adamw_8bit",
+        optim="adamw_8bit",
         bf16=True, 
         remove_unused_columns=False,
         save_strategy="steps",
