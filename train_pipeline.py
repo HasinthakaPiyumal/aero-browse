@@ -163,8 +163,38 @@ def run_pipeline(args):
     num_added = tokenizer.add_tokens(vla_config.all_custom_tokens)
     print(f"      Added {num_added} custom action & coordinate tokens.")
 
-    # ── 2. Load Base Model (4-bit NF4) ──
-    print("\n[2/5] Loading base model in 4-bit NF4 with SDPA attention...")
+    # ── 2. Load & Filter Dataset ──
+    print("\n[2/5] Loading Multimodal-Mind2Web dataset from HF...")
+    hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
+
+    def has_bounding_box(example):
+        try:
+            candidates = example["pos_candidates"]
+            if not candidates:
+                return False
+            for c_str in candidates:
+                c = json.loads(c_str) if isinstance(c_str, str) else c_str
+                attrs = c.get("attributes", {})
+                if isinstance(attrs, str):
+                    attrs = json.loads(attrs)
+                if attrs.get("bounding_box_rect"):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    print("      Filtering dataset for bounding boxes sequentially (low memory)...")
+    filtered_dataset = hf_dataset.filter(has_bounding_box)
+    print(f"      Filtered dataset size: {len(filtered_dataset)} samples")
+
+    if args.subset_size is not None and args.subset_size < len(filtered_dataset):
+        print(f"      Selecting a subset of {args.subset_size} samples...")
+        filtered_dataset = filtered_dataset.select(range(args.subset_size))
+
+    train_dataset = BrowserAgentDataset(filtered_dataset, processor)
+
+    # ── 3. Load Base Model (4-bit NF4) ──
+    print("\n[3/5] Loading base model in 4-bit NF4 with SDPA attention...")
     try:
         from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
     except ImportError:
@@ -185,8 +215,8 @@ def run_pipeline(args):
     )
     model.resize_token_embeddings(len(tokenizer))
 
-    # ── 3. Apply LoRA ──
-    print("\n[3/5] Constructing LoRA adapter...")
+    # ── 4. Apply LoRA ──
+    print("\n[4/5] Constructing LoRA adapter...")
     peft_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -199,37 +229,6 @@ def run_pipeline(args):
     )
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
-
-    # ── 4. Load & Filter Dataset ──
-    print("\n[4/5] Loading Multimodal-Mind2Web dataset from HF...")
-    hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
-
-    def has_bounding_box(example):
-        try:
-            candidates = example["pos_candidates"]
-            if not candidates:
-                return False
-            for c_str in candidates:
-                c = json.loads(c_str) if isinstance(c_str, str) else c_str
-                attrs = c.get("attributes", {})
-                if isinstance(attrs, str):
-                    attrs = json.loads(attrs)
-                if attrs.get("bounding_box_rect"):
-                    return True
-            return False
-        except Exception:
-            return False
-
-    print("      Filtering dataset for bounding boxes in parallel...")
-    num_proc = os.cpu_count() or 2
-    filtered_dataset = hf_dataset.filter(has_bounding_box, num_proc=num_proc)
-    print(f"      Filtered dataset size: {len(filtered_dataset)} samples")
-
-    if args.subset_size is not None and args.subset_size < len(filtered_dataset):
-        print(f"      Selecting a subset of {args.subset_size} samples...")
-        filtered_dataset = filtered_dataset.select(range(args.subset_size))
-
-    train_dataset = BrowserAgentDataset(filtered_dataset, processor)
 
     # ── 5. Fine-Tuning SFTTrainer ──
     print("\n[5/5] Launching SFT training loop...")
