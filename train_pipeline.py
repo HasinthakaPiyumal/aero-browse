@@ -103,6 +103,12 @@ def run_pipeline(args):
         print("❌ Error: HF_TOKEN environment variable is required to upload models to Hugging Face. "
               "Set HF_TOKEN or run with --skip_push.")
         sys.exit(1)
+
+    # Log in to HF Hub early so all downloads are authenticated
+    if hf_token:
+        from huggingface_hub import login as hf_login
+        hf_login(token=hf_token, add_to_git_credential=False)
+        print("✅ Logged in to Hugging Face Hub.")
         
     if not torch.cuda.is_available():
         print("❌ Error: CUDA-enabled GPU is required for training.")
@@ -124,7 +130,24 @@ def run_pipeline(args):
     # ── 1. Load Tokenizer & Configs ──
     print("\n[1/5] Injecting action tokens into processor...")
     vla_config = VLATokenizerConfig()
-    processor = AutoProcessor.from_pretrained(args.base_model, token=hf_token)
+
+    # SmolVLM's preprocessor_config.json can break AutoProcessor auto-detection
+    # in some transformers versions. Try explicit processor classes first.
+    processor = None
+    for proc_cls_name in ["SmolVLMProcessor", "Idefics3Processor"]:
+        try:
+            import transformers
+            proc_cls = getattr(transformers, proc_cls_name)
+            processor = proc_cls.from_pretrained(args.base_model, token=hf_token)
+            print(f"      Loaded processor via {proc_cls_name}.")
+            break
+        except (AttributeError, ImportError, Exception) as e:
+            print(f"      {proc_cls_name} unavailable: {e}")
+            continue
+    if processor is None:
+        processor = AutoProcessor.from_pretrained(args.base_model, token=hf_token)
+        print("      Loaded processor via AutoProcessor.")
+
     tokenizer = processor.tokenizer
     num_added = tokenizer.add_tokens(vla_config.all_custom_tokens)
     print(f"      Added {num_added} custom action & coordinate tokens.")
