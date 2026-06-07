@@ -106,9 +106,14 @@ def run_pipeline(args):
 
     # Log in to HF Hub early so all downloads are authenticated
     if hf_token:
-        from huggingface_hub import login as hf_login
-        hf_login(token=hf_token, add_to_git_credential=False)
-        print("✅ Logged in to Hugging Face Hub.")
+        try:
+            from huggingface_hub import login as hf_login
+            hf_login(token=hf_token, add_to_git_credential=False)
+            print("✅ Logged in to Hugging Face Hub.")
+        except Exception as e:
+            print(f"⚠️  HF login failed (token may be invalid/expired): {e}")
+            print("   Continuing without authentication (public models still work).")
+            hf_token = None
         
     if not torch.cuda.is_available():
         print("❌ Error: CUDA-enabled GPU is required for training.")
