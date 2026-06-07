@@ -341,6 +341,23 @@ def run_pipeline(args):
     # Free up memory
     del base_model, model_with_lora, merged_model
     gc.collect()
+    torch.cuda.empty_cache()
+
+    # Patch tokenizer_config.json to prevent extra_special_tokens list loading error
+    print("      Patching tokenizer configs to prevent extra_special_tokens crash...")
+    for target_dir in [args.merged_dir, args.adapter_dir]:
+        tok_config_path = os.path.join(target_dir, "tokenizer_config.json")
+        if os.path.exists(tok_config_path):
+            try:
+                with open(tok_config_path, "r", encoding="utf-8") as f:
+                    tok_config = json.load(f)
+                if "extra_special_tokens" in tok_config:
+                    del tok_config["extra_special_tokens"]
+                    with open(tok_config_path, "w", encoding="utf-8") as f:
+                        json.dump(tok_config, f, indent=2, ensure_ascii=False)
+                    print(f"      Successfully patched {tok_config_path}")
+            except Exception as e:
+                print(f"      Warning: Failed to patch {tok_config_path}: {e}")
 
     # ── 7. Quantization to GGUF (llama.cpp) ──
     if not args.skip_gguf:
