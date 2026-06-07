@@ -53,7 +53,17 @@ class BrowserAgentDataset(Dataset):
             target_cand = json.loads(c_str) if isinstance(c_str, str) else c_str
             
         # Get bounding box coordinates
-        scaled_x, scaled_y = 500, 500  # Default fallback coordinates
+        # Get raw screenshot and dimensions
+        screenshot = row["screenshot"]
+        W, H = screenshot.size
+        H_crop = 1024
+        
+        # Bounding box and coordinates extraction
+        scaled_x, scaled_y = 500, 500
+        image = screenshot
+        
+        # Extract target center if candidate exists
+        has_valid_coords = False
         if target_cand:
             attrs = target_cand.get("attributes", {})
             if isinstance(attrs, str):
@@ -67,18 +77,35 @@ class BrowserAgentDataset(Dataset):
                         x, y, w, h = parts
                         cx = x + w / 2
                         cy = y + h / 2
-                        
-                        # Scale coordinates relative to screenshot size
-                        screenshot = row["screenshot"]
-                        W, H = screenshot.size
-                        scaled_x = int((cx / W) * 1000)
-                        scaled_y = int((cy / H) * 1000)
-                        
-                        # Clip to bounds
-                        scaled_x = max(0, min(1000, scaled_x))
-                        scaled_y = max(0, min(1000, scaled_y))
+                        has_valid_coords = True
                 except Exception:
                     pass
+                    
+        # Apply vertical cropping if the screenshot is too tall (e.g. 5000+ pixels)
+        # to prevent OOM errors and massive patch dimensions in SmolVLM.
+        if H > H_crop:
+            if has_valid_coords:
+                y_start = int(cy - H_crop / 2)
+                y_start = max(0, min(H - H_crop, y_start))
+                image = screenshot.crop((0, y_start, W, y_start + H_crop))
+                new_cy = cy - y_start
+            else:
+                y_start = 0
+                image = screenshot.crop((0, 0, W, H_crop))
+                new_cy = 500
+            
+            actual_crop_height = H_crop
+        else:
+            y_start = 0
+            image = screenshot
+            new_cy = cy if has_valid_coords else 500
+            actual_crop_height = H
+            
+        if has_valid_coords:
+            scaled_x = int((cx / W) * 1000)
+            scaled_y = int((new_cy / actual_crop_height) * 1000)
+            scaled_x = max(0, min(1000, scaled_x))
+            scaled_y = max(0, min(1000, scaled_y))
         
         # Map action type
         if op_type == "TYPE":
@@ -102,7 +129,6 @@ class BrowserAgentDataset(Dataset):
         
         full_text = prompt + target_action_str
         
-        image = row["screenshot"]
         # Convert to RGB if not already
         if image.mode != "RGB":
             image = image.convert("RGB")
