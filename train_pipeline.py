@@ -51,12 +51,14 @@ def run_pipeline(args):
     import gc
     import subprocess
     import torch
-    try:
-        import torchvision
-    except ImportError:
-        print("❌ Error: 'torchvision' library is missing! It is required by SmolVLM's image processor.")
-        print("   Please install it in your environment (e.g. pip install torchvision)")
-        sys.exit(1)
+    if not args.skip_training:
+        try:
+            import torchvision
+        except Exception as e:
+            print(f"❌ Error: 'torchvision' library is missing or broken: {e}")
+            print("   It is required by SmolVLM's image processor for training.")
+            print("   Please install/reinstall it in your environment (e.g. pip install torchvision)")
+            sys.exit(1)
     import numpy as np
     from PIL import Image
     from tqdm import tqdm
