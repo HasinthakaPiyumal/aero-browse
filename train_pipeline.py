@@ -39,6 +39,8 @@ def parse_args():
     # Actions
     parser.add_argument("--skip_gguf", action="store_true", help="Skip GGUF quantization step")
     parser.add_argument("--skip_push", action="store_true", help="Skip pushing to Hugging Face Hub")
+    parser.add_argument("--skip_training", action="store_true", help="Skip the SFT training phase")
+    parser.add_argument("--skip_merge", action="store_true", help="Skip the LoRA adapter merging phase")
     
     return parser.parse_args()
 
@@ -164,193 +166,200 @@ def run_pipeline(args):
     print(f"      Added {num_added} custom action & coordinate tokens.")
 
     # ── 2. Load & Filter Dataset ──
-    print("\n[2/5] Loading Multimodal-Mind2Web dataset from HF...")
-    hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
+    if not args.skip_training:
+        print("\n[2/5] Loading Multimodal-Mind2Web dataset from HF...")
+        hf_dataset = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
 
-    def has_bounding_box(example):
-        try:
-            candidates = example["pos_candidates"]
-            if not candidates:
+        def has_bounding_box(example):
+            try:
+                candidates = example["pos_candidates"]
+                if not candidates:
+                    return False
+                for c_str in candidates:
+                    c = json.loads(c_str) if isinstance(c_str, str) else c_str
+                    attrs = c.get("attributes", {})
+                    if isinstance(attrs, str):
+                        attrs = json.loads(attrs)
+                    if attrs.get("bounding_box_rect"):
+                        return True
                 return False
-            for c_str in candidates:
-                c = json.loads(c_str) if isinstance(c_str, str) else c_str
-                attrs = c.get("attributes", {})
-                if isinstance(attrs, str):
-                    attrs = json.loads(attrs)
-                if attrs.get("bounding_box_rect"):
-                    return True
-            return False
-        except Exception:
-            return False
+            except Exception:
+                return False
 
-    print("      Filtering dataset for bounding boxes sequentially (low memory)...")
-    filtered_dataset = hf_dataset.filter(has_bounding_box)
-    print(f"      Filtered dataset size: {len(filtered_dataset)} samples")
+        print("      Filtering dataset for bounding boxes sequentially (low memory)...")
+        filtered_dataset = hf_dataset.filter(has_bounding_box)
+        print(f"      Filtered dataset size: {len(filtered_dataset)} samples")
 
-    if args.subset_size is not None and args.subset_size < len(filtered_dataset):
-        print(f"      Selecting a subset of {args.subset_size} samples...")
-        filtered_dataset = filtered_dataset.select(range(args.subset_size))
+        if args.subset_size is not None and args.subset_size < len(filtered_dataset):
+            print(f"      Selecting a subset of {args.subset_size} samples...")
+            filtered_dataset = filtered_dataset.select(range(args.subset_size))
 
-    # Split into 95% train and 5% validation
-    print("      Splitting dataset into 95% train and 5% validation...")
-    split_ds = filtered_dataset.train_test_split(test_size=0.05, seed=42)
-    train_dataset = BrowserAgentDataset(split_ds["train"], processor)
-    eval_dataset = BrowserAgentDataset(split_ds["test"], processor)
-    print(f"      Train samples: {len(train_dataset)}, Validation samples: {len(eval_dataset)}")
+        # Split into 95% train and 5% validation
+        print("      Splitting dataset into 95% train and 5% validation...")
+        split_ds = filtered_dataset.train_test_split(test_size=0.05, seed=42)
+        train_dataset = BrowserAgentDataset(split_ds["train"], processor)
+        eval_dataset = BrowserAgentDataset(split_ds["test"], processor)
+        print(f"      Train samples: {len(train_dataset)}, Validation samples: {len(eval_dataset)}")
 
-    # ── 3. Load Base Model (4-bit NF4) ──
-    print("\n[3/5] Loading base model in 4-bit NF4 with SDPA attention...")
-    try:
-        from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
-    except ImportError:
-        from transformers import AutoModelForVision2Seq
+        # ── 3. Load Base Model (4-bit NF4) ──
+        print("\n[3/5] Loading base model in 4-bit NF4 with SDPA attention...")
+        try:
+            from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+        except ImportError:
+            from transformers import AutoModelForVision2Seq
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-    model = AutoModelForVision2Seq.from_pretrained(
-        args.base_model,
-        quantization_config=bnb_config,
-        device_map="auto",
-        _attn_implementation="sdpa",
-        token=hf_token,
-    )
-    model.resize_token_embeddings(len(tokenizer))
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        model = AutoModelForVision2Seq.from_pretrained(
+            args.base_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            _attn_implementation="sdpa",
+            token=hf_token,
+        )
+        model.resize_token_embeddings(len(tokenizer))
 
-    # ── 4. Apply LoRA ──
-    print("\n[4/5] Constructing LoRA adapter...")
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        modules_to_save=["embed_tokens", "lm_head"],
-        task_type="CAUSAL_LM",
-        ensure_weight_tying=True,
-    )
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+        # ── 4. Apply LoRA ──
+        print("\n[4/5] Constructing LoRA adapter...")
+        peft_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            modules_to_save=["embed_tokens", "lm_head"],
+            task_type="CAUSAL_LM",
+            ensure_weight_tying=True,
+        )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
 
-    # ── 5. Fine-Tuning SFTTrainer ──
-    print("\n[5/5] Launching SFT training loop...")
-    training_args = SFTConfig(
-        output_dir=args.output_dir,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        learning_rate=args.learning_rate,
-        logging_steps=1,
-        max_steps=args.max_steps,
-        optim="adamw_8bit",
-        bf16=True,
-        remove_unused_columns=False,
-        save_strategy="steps",
-        save_steps=100,
-        eval_strategy="steps",
-        eval_steps=100,
-        max_length=args.max_seq_length,
-        report_to="wandb",
-        run_name=args.wandb_run_name,
-        warmup_steps=20,
-        save_total_limit=1,
-        lr_scheduler_type="cosine",
-        gradient_checkpointing=True,
-        disable_tqdm=True,
-        dataloader_num_workers=2,
-        dataloader_pin_memory=True,
-    )
+        # ── 5. Fine-Tuning SFTTrainer ──
+        print("\n[5/5] Launching SFT training loop...")
+        training_args = SFTConfig(
+            output_dir=args.output_dir,
+            per_device_train_batch_size=args.batch_size,
+            per_device_eval_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.grad_accum,
+            learning_rate=args.learning_rate,
+            logging_steps=1,
+            max_steps=args.max_steps,
+            optim="adamw_8bit",
+            bf16=True,
+            remove_unused_columns=False,
+            save_strategy="steps",
+            save_steps=100,
+            eval_strategy="steps",
+            eval_steps=100,
+            max_length=args.max_seq_length,
+            report_to="wandb",
+            run_name=args.wandb_run_name,
+            warmup_steps=20,
+            save_total_limit=1,
+            lr_scheduler_type="cosine",
+            gradient_checkpointing=True,
+            disable_tqdm=True,
+            dataloader_num_workers=2,
+            dataloader_pin_memory=True,
+        )
 
-    def collate_fn(examples):
-        input_ids = [e["input_ids"] for e in examples]
-        attention_mask = [e["attention_mask"] for e in examples]
-        labels = [e["labels"] for e in examples]
-        pixel_values = [e["pixel_values"] for e in examples]
-        pixel_attention_mask = [e["pixel_attention_mask"] for e in examples]
+        def collate_fn(examples):
+            input_ids = [e["input_ids"] for e in examples]
+            attention_mask = [e["attention_mask"] for e in examples]
+            labels = [e["labels"] for e in examples]
+            pixel_values = [e["pixel_values"] for e in examples]
+            pixel_attention_mask = [e["pixel_attention_mask"] for e in examples]
 
-        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
-        attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+            input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
+            attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
+            labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
 
-        # Pad vision patches along dimension 0
-        max_patches = max(p.shape[0] for p in pixel_values)
-        padded_pixel_values = []
-        padded_pixel_attention_mask = []
+            # Pad vision patches along dimension 0
+            max_patches = max(p.shape[0] for p in pixel_values)
+            padded_pixel_values = []
+            padded_pixel_attention_mask = []
 
-        for p, p_mask in zip(pixel_values, pixel_attention_mask):
-            num_patches = p.shape[0]
-            p_pad = torch.nn.functional.pad(p, (0, 0, 0, 0, 0, 0, 0, max_patches - num_patches), value=0)
-            padded_pixel_values.append(p_pad)
-            
-            m_pad = torch.nn.functional.pad(p_mask, (0, 0, 0, 0, 0, max_patches - num_patches), value=0)
-            padded_pixel_attention_mask.append(m_pad)
+            for p, p_mask in zip(pixel_values, pixel_attention_mask):
+                num_patches = p.shape[0]
+                p_pad = torch.nn.functional.pad(p, (0, 0, 0, 0, 0, 0, 0, max_patches - num_patches), value=0)
+                padded_pixel_values.append(p_pad)
+                
+                m_pad = torch.nn.functional.pad(p_mask, (0, 0, 0, 0, 0, max_patches - num_patches), value=0)
+                padded_pixel_attention_mask.append(m_pad)
 
-        pixel_values = torch.stack(padded_pixel_values)
-        pixel_attention_mask = torch.stack(padded_pixel_attention_mask)
+            pixel_values = torch.stack(padded_pixel_values)
+            pixel_attention_mask = torch.stack(padded_pixel_attention_mask)
 
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-            "pixel_values": pixel_values,
-            "pixel_attention_mask": pixel_attention_mask
-        }
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels,
+                "pixel_values": pixel_values,
+                "pixel_attention_mask": pixel_attention_mask
+            }
 
-    trainer = SFTTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        args=training_args,
-        data_collator=collate_fn,
-        callbacks=[ConsoleProgressCallback(max_steps=args.max_steps)]
-    )
+        trainer = SFTTrainer(
+            model=model,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            args=training_args,
+            data_collator=collate_fn,
+            callbacks=[ConsoleProgressCallback(max_steps=args.max_steps)]
+        )
 
-    train_result = trainer.train()
+        train_result = trainer.train()
 
-    # Save adapter
-    print(f"\n💾 Saving adapter to {args.adapter_dir}...")
-    trainer.model.save_pretrained(args.adapter_dir)
-    tokenizer.save_pretrained(args.adapter_dir)
-    
-    metrics = train_result.metrics
-    wandb.log({"final_train_loss": metrics.get("train_loss", None)})
-    print("✅ Training complete. Adapter saved successfully!")
+        # Save adapter
+        print(f"\n💾 Saving adapter to {args.adapter_dir}...")
+        trainer.model.save_pretrained(args.adapter_dir)
+        tokenizer.save_pretrained(args.adapter_dir)
+        
+        metrics = train_result.metrics
+        wandb.log({"final_train_loss": metrics.get("train_loss", None)})
+        print("✅ Training complete. Adapter saved successfully!")
+    else:
+        print("\n[2/5], [3/5], [4/5], [5/5] Skipping dataset loading, model loading, and SFT training phases...")
 
     # ── 6. Merge LoRA Weights ──
-    print("\n🔗 Starting LoRA Weight Merge...")
-    del model, trainer
-    gc.collect()
-    torch.cuda.empty_cache()
+    if not args.skip_merge:
+        print("\n🔗 Starting LoRA Weight Merge...")
+        if not args.skip_training:
+            del model, trainer
+            gc.collect()
+            torch.cuda.empty_cache()
 
-    print("      Loading base model in fp16 on CPU for merge...")
-    base_model = AutoModelForVision2Seq.from_pretrained(
-        args.base_model,
-        torch_dtype=torch.float16,
-        device_map="cpu",
-        token=hf_token,
-    )
-    
-    # Match vocabulary size with the adapter config
-    base_model.resize_token_embeddings(len(tokenizer))
-    
-    print("      Loading LoRA adapter...")
-    model_with_lora = PeftModel.from_pretrained(base_model, args.adapter_dir)
-    
-    print("      Merging weights...")
-    merged_model = model_with_lora.merge_and_unload()
-    
-    print(f"      Saving merged model to {args.merged_dir}...")
-    merged_model.save_pretrained(args.merged_dir, safe_serialization=True)
-    tokenizer.save_pretrained(args.merged_dir)
-    print("✅ LoRA weights merged successfully!")
+        print("      Loading base model in fp16 on CPU for merge...")
+        base_model = AutoModelForVision2Seq.from_pretrained(
+            args.base_model,
+            torch_dtype=torch.float16,
+            device_map="cpu",
+            token=hf_token,
+        )
+        
+        # Match vocabulary size with the adapter config
+        base_model.resize_token_embeddings(len(tokenizer))
+        
+        print("      Loading LoRA adapter...")
+        model_with_lora = PeftModel.from_pretrained(base_model, args.adapter_dir)
+        
+        print("      Merging weights...")
+        merged_model = model_with_lora.merge_and_unload()
+        
+        print(f"      Saving merged model to {args.merged_dir}...")
+        merged_model.save_pretrained(args.merged_dir, safe_serialization=True)
+        tokenizer.save_pretrained(args.merged_dir)
+        print("✅ LoRA weights merged successfully!")
 
-    # Free up memory
-    del base_model, model_with_lora, merged_model
-    gc.collect()
-    torch.cuda.empty_cache()
+        # Free up memory
+        del base_model, model_with_lora, merged_model
+        gc.collect()
+        torch.cuda.empty_cache()
+    else:
+        print("\n🔗 Skipping LoRA adapter merging phase...")
 
     # Patch tokenizer_config.json to prevent extra_special_tokens list loading error
     print("      Patching tokenizer configs to prevent extra_special_tokens crash...")
@@ -408,17 +417,24 @@ def run_pipeline(args):
             gguf_q4_path = os.path.join(args.gguf_dir, "aero-browse-q4_k_m.gguf")
             
             if not os.path.exists(quantize_bin):
-                print("      Building llama.cpp quantizer...")
-                build_dir = os.path.join(llama_cpp_dir, "build")
-                os.makedirs(build_dir, exist_ok=True)
-                subprocess.run(["cmake", ".."], cwd=build_dir, check=True)
-                subprocess.run(["cmake", "--build", ".", "--config", "Release", "-j"], cwd=build_dir, check=True)
+                try:
+                    print("      Building llama.cpp quantizer...")
+                    build_dir = os.path.join(llama_cpp_dir, "build")
+                    os.makedirs(build_dir, exist_ok=True)
+                    subprocess.run(["cmake", ".."], cwd=build_dir, check=True)
+                    subprocess.run(["cmake", "--build", ".", "--config", "Release", "-j"], cwd=build_dir, check=True)
+                except Exception as e:
+                    print(f"⚠️  Failed to compile llama.cpp quantizer: {e}")
+                    print("   To enable Q4_K_M quantization, install cmake (e.g. pip install cmake)")
                 
             if os.path.exists(quantize_bin):
-                print("      Quantizing to Q4_K_M...")
-                subprocess.run([quantize_bin, gguf_fp16_path, gguf_q4_path, "Q4_K_M"], check=True)
-                q4_size = os.path.getsize(gguf_q4_path) / (1024 * 1024)
-                print(f"✅ Q4_K_M GGUF saved: {gguf_q4_path} ({q4_size:.0f} MB)")
+                try:
+                    print("      Quantizing to Q4_K_M...")
+                    subprocess.run([quantize_bin, gguf_fp16_path, gguf_q4_path, "Q4_K_M"], check=True)
+                    q4_size = os.path.getsize(gguf_q4_path) / (1024 * 1024)
+                    print(f"✅ Q4_K_M GGUF saved: {gguf_q4_path} ({q4_size:.0f} MB)")
+                except Exception as e:
+                    print(f"⚠️  Q4_K_M quantization failed: {e}")
             else:
                 print("⚠️  Quantize binary not compiled; skipping Q4_K_M step.")
 
@@ -470,8 +486,8 @@ def run_pipeline(args):
         return total / (1024 * 1024)
 
     summary = {
-        "training_samples": len(train_dataset),
-        "max_steps": args.max_steps,
+        "training_samples": len(train_dataset) if not args.skip_training else 0,
+        "max_steps": args.max_steps if not args.skip_training else 0,
         "adapter_size_mb": get_dir_size_mb(args.adapter_dir),
         "merged_model_size_mb": get_dir_size_mb(args.merged_dir),
     }
