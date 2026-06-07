@@ -98,6 +98,7 @@ def train_vla():
     training_args = SFTConfig(
         output_dir="./aero-browse-sft-output",
         per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=10,
