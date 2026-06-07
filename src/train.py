@@ -1,4 +1,11 @@
 import torch
+import sys
+try:
+    import torchvision
+except ImportError:
+    print("❌ Error: 'torchvision' library is missing! It is required by SmolVLM's image processor.")
+    print("   Please install it in your environment: pip install torchvision")
+    sys.exit(1)
 from transformers import AutoProcessor, BitsAndBytesConfig, TrainingArguments
 
 from peft import LoraConfig, get_peft_model
