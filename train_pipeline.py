@@ -124,7 +124,7 @@ def run_pipeline(args):
     # ── 1. Load Tokenizer & Configs ──
     print("\n[1/5] Injecting action tokens into processor...")
     vla_config = VLATokenizerConfig()
-    processor = AutoProcessor.from_pretrained(args.base_model)
+    processor = AutoProcessor.from_pretrained(args.base_model, token=hf_token)
     tokenizer = processor.tokenizer
     num_added = tokenizer.add_tokens(vla_config.all_custom_tokens)
     print(f"      Added {num_added} custom action & coordinate tokens.")
@@ -147,6 +147,7 @@ def run_pipeline(args):
         quantization_config=bnb_config,
         device_map="auto",
         _attn_implementation="sdpa",
+        token=hf_token,
     )
     model.resize_token_embeddings(len(tokenizer))
 
@@ -287,6 +288,7 @@ def run_pipeline(args):
         args.base_model,
         torch_dtype=torch.float16,
         device_map="cpu",
+        token=hf_token,
     )
     
     # Match vocabulary size with the adapter config
