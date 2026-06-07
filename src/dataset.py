@@ -133,6 +133,11 @@ class BrowserAgentDataset(Dataset):
         if image.mode != "RGB":
             image = image.convert("RGB")
             
+        # Resize image to a maximum longest edge of 768 to reduce patch count and prevent GPU OOM
+        max_img_size = 768
+        if max(image.size) > max_img_size:
+            image.thumbnail((max_img_size, max_img_size), Image.Resampling.LANCZOS)
+            
         inputs = self.processor(text=full_text, images=image, return_tensors="pt")
         
         input_ids = inputs["input_ids"].squeeze(0)

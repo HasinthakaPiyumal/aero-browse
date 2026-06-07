@@ -17,8 +17,8 @@ def parse_args():
     parser.add_argument("--hf_gguf_repo_id", type=str, default=None, help="Hugging Face repo ID to push the quantized GGUF models")
     
     # Training Hyperparameters
-    parser.add_argument("--batch_size", type=int, default=4, help="Per-device train batch size")
-    parser.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps")
+    parser.add_argument("--batch_size", type=int, default=2, help="Per-device train batch size")
+    parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Learning rate")
     parser.add_argument("--max_steps", type=int, default=500, help="Maximum number of training steps")
     parser.add_argument("--lora_r", type=int, default=16, help="LoRA dimension rank r")
