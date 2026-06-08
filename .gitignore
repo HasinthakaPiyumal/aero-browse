@@ -64,3 +64,10 @@ checkpoints/
 .DS_Store
 Thumbs.db
 wandb/
+
+# Aero Browse Local Model Output & Quantization Artifacts
+aero-browse-sft-output/
+aero-browse_lora_adapter/
+aero-browse-merged/
+aero-browse-gguf/
+llama.cpp/

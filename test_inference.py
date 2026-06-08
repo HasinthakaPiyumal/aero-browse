@@ -76,18 +76,39 @@ def parse_predicted_action(output_text):
         action_type = "type"
     elif "<hover>" in output_text:
         action_type = "hover"
+    elif "<scroll_down>" in output_text:
+        action_type = "scroll_down"
+    elif "<scroll_up>" in output_text:
+        action_type = "scroll_up"
         
-    # Match location tokens like <loc_123>
+    # Match location tokens like <loc_123> or separate <x_123><y_456>
     locs = re.findall(r"<loc_(\d+)>", output_text)
     if len(locs) >= 2:
         x = int(locs[0])
         y = int(locs[1])
-        
+    else:
+        x_match = re.search(r"<x_(\d+)>", output_text)
+        y_match = re.search(r"<y_(\d+)>", output_text)
+        if x_match and y_match:
+            x = int(x_match.group(1))
+            y = int(y_match.group(1))
+            
     # Extract type text if present
     if action_type == "type":
-        parts = output_text.split(f"<loc_{locs[1]}>") if len(locs) >= 2 else []
-        if len(parts) > 1:
-            text_content = parts[1].replace("<terminate>", "").strip()
+        # Look for <text:"something"> pattern
+        text_match = re.search(r'<text:"([^"]+)"\>', output_text)
+        if text_match:
+            text_content = text_match.group(1)
+        else:
+            # Fallback to splitting by the last location token
+            split_token = f"<y_{y}>" if y is not None and f"<y_{y}>" in output_text else (f"<loc_{locs[1]}>" if len(locs) >= 2 else "")
+            if split_token:
+                parts = output_text.split(split_token)
+                if len(parts) > 1:
+                    text_content = parts[1].replace("<terminate>", "").strip()
+                    # Clean up <text:"..."> wrapper
+                    text_content = re.sub(r'^<text:"(.*)">$', r'\1', text_content)
+                    text_content = text_content.strip('"')
             
     return action_type, x, y, text_content
 
@@ -104,11 +125,42 @@ def run_test():
     else:
         print("🖼️ No local image provided. Fetching a sample screenshot from osunlp/Multimodal-Mind2Web...")
         from datasets import load_dataset
+        import json
         ds = load_dataset("osunlp/Multimodal-Mind2Web", split="train")
         sample = ds[0]
         image = sample["screenshot"]
-        print(f"   Using sample confirmed task: '{sample['confirmed_task']}'")
-        args.goal = sample["confirmed_task"]
+        
+        # Check if user did not provide a custom goal on the command line
+        if args.goal == "Click on the search bar":
+            # Auto-generate simple goal to align with training format
+            candidates = sample["pos_candidates"]
+            target_cand = None
+            for c_str in candidates:
+                c = json.loads(c_str) if isinstance(c_str, str) else c_str
+                if c.get("is_original_target"):
+                    target_cand = c
+                    break
+            if not target_cand:
+                for c_str in candidates:
+                    c = json.loads(c_str) if isinstance(c_str, str) else c_str
+                    if c.get("is_top_level_target"):
+                        target_cand = c
+                        break
+            if not target_cand and candidates:
+                c_str = candidates[0]
+                target_cand = json.loads(c_str) if isinstance(c_str, str) else c_str
+                
+            op = sample["operation"]
+            if isinstance(op, str):
+                op = json.loads(op)
+            op_type = op.get("op", "CLICK")
+            value = op.get("value", "")
+            
+            from src.dataset import generate_simple_goal
+            args.goal = generate_simple_goal(op_type, value, target_cand)
+            print(f"   Auto-generated simple goal: '{args.goal}'")
+        else:
+            print(f"   Using provided goal: '{args.goal}'")
         
     # Preprocess Image
     W, H = image.size
@@ -151,7 +203,37 @@ def run_test():
     
     action, x_norm, y_norm, text_val = parse_predicted_action(predicted_text)
     print(f"   Parsed Action: {action.upper()}")
-    if x_norm is not None and y_norm is not None:
+    
+    if action in ["scroll_down", "scroll_up"]:
+        print(f"   Parsed action is scrolling. Visualizing scroll direction.")
+        # Draw visual feedback for scrolling
+        draw = ImageDraw.Draw(draw_image)
+        label_text = f" ACTION: {action.upper()} "
+        
+        # Draw an indicator box in the middle of the screen
+        box_w, box_h = 300, 60
+        left = (W - box_w) // 2
+        top = (H - box_h) // 2
+        draw.rectangle(
+            [(left, top), (left + box_w, top + box_h)],
+            fill="black", outline="red", width=3
+        )
+        draw.text((left + 35, top + 20), label_text, fill="white")
+        
+        # Draw some directional arrows
+        arrow_y_offset = 80
+        if action == "scroll_down":
+            # Arrow pointing down
+            draw.line([(W // 2, top + box_h), (W // 2, top + box_h + arrow_y_offset)], fill="red", width=5)
+            draw.line([(W // 2 - 15, top + box_h + arrow_y_offset - 15), (W // 2, top + box_h + arrow_y_offset), (W // 2 + 15, top + box_h + arrow_y_offset - 15)], fill="red", width=5)
+        else:
+            # Arrow pointing up
+            draw.line([(W // 2, top), (W // 2, top - arrow_y_offset)], fill="red", width=5)
+            draw.line([(W // 2 - 15, top - arrow_y_offset + 15), (W // 2, top - arrow_y_offset), (W // 2 + 15, top - arrow_y_offset + 15)], fill="red", width=5)
+            
+        draw_image.save(args.output_path)
+        print(f"✅ Annotated screenshot (scrolling action) saved successfully to: {args.output_path}")
+    elif x_norm is not None and y_norm is not None:
         # Denormalize coordinates (0-1000) back to actual cropped image pixels
         actual_x = int((x_norm / 1000) * W)
         actual_y = int((y_norm / 1000) * H)

@@ -367,7 +367,7 @@ def run_pipeline(args):
         
         print(f"      Saving merged model to {args.merged_dir}...")
         merged_model.save_pretrained(args.merged_dir, safe_serialization=True)
-        tokenizer.save_pretrained(args.merged_dir)
+        processor.save_pretrained(args.merged_dir)
         print("✅ LoRA weights merged successfully!")
 
         # Free up memory
